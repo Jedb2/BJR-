@@ -1,0 +1,229 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <sys/types.h>
+#include <sys/wait.h>
+#include <semaphore.h>
+#include <fcntl.h>
+#include <string.h>
+#include <time.h>
+
+
+#define DECK_size 52
+#define MAX_players 4
+
+typedef struct{
+int playerid;
+int score;
+int hasDrawnThree;
+int hasDrawnSeven;
+} Player; 
+
+int *deck;
+typedef struct {
+    int pipes[MAX_players][2];
+    Player players[MAX_players];
+    sem_t *semaphore; 
+    int Playercount;
+} Game;
+
+Game game;
+
+void initDeck();
+void shuffle();
+void dealer();
+void playGame(int playerID);
+int chooseVictim(int playerID);
+void initPlayers(int Playercount);
+void cleanup();
+int calcScore(Player *player);
+
+
+
+
+void initDeck(){ 
+    deck = (int *)malloc(DECK_size * sizeof(int));
+    for (int i = 0; i < DECK_size; i++) {
+        deck[i] = (i % 13) + 1;
+    }
+    shuffle(); 
+}
+
+void shuffle(){
+    for (int i = 0; i< DECK_size; i++){
+        int j = rand() % DECK_size;
+        int temp = deck[i];
+        deck[i] = deck[j];
+        deck[j] = temp;
+    }
+}
+
+void initPlayers(int Playercount) {
+
+    game.Playercount = Playercount; 
+    for (int i = 0; i < Playercount; i++){
+        game.players[i].playerid = i;
+        game.players[i].score = 0;
+        game.players[i].hasDrawnThree = 0;
+        game.players[i].hasDrawnSeven = 0; 
+        pipe(game.pipes[i]);
+    }
+    game.semaphore = sem_open("game_semaphore", O_CREAT, 0644, 1);
+
+}
+
+int calcScore(Player *player){
+    int score =  player -> score; 
+    return score;
+}
+
+void dealer(){
+    int deckIndex = 0; 
+    while (1){
+        for (int i = 0; i < game.Playercount; i++){
+            if(deckIndex >= DECK_size){                                         // error handling if the deck runs out, however with the number of max players allowed this is very unlikely
+                printf("You've ran out of cards buddy. Game over.\n");
+                cleanup();
+                exit(0);
+            }
+        sem_wait(game.semaphore); //Block access of other players to the deck
+
+        int card = deck[deckIndex++];
+        write(game.pipes[i][1], &card, sizeof(card));
+        printf("Player %d has drawn a %d \n", i, card);
+        
+        sem_post(game.semaphore); //open access to deck
+
+        usleep(500000);
+
+
+        if (card == 3 || card == 7){
+            int choice = rand() % 2 + 1;
+            if (choice == 1){
+                game.players[i].score += card;
+            }
+            else{
+                int victim = rand() % game.Playercount;
+                while (victim == i) {
+                    victim = rand()  % game.Playercount;
+                }
+                game.players[victim].score =+ card;
+            }
+        }
+
+    
+
+        for (int i = 0; i < game.Playercount; i++){
+        if(game.players[i].score <= 20){
+        //    void playGame();
+        }
+        
+        if(game.players[i].score >=21){
+            if(game.players[i].score == 21){
+                printf("Player %d wins, the rest of you can go home\n", i);
+            }
+            else {
+                printf("Play %d busted with a score of %d, better luck next time\n", i, game.players[i].score);
+            }
+            cleanup();
+            exit(0);        
+        }
+    }
+    
+}
+}
+
+}
+
+
+void playGame(int playerID){
+    int card;
+    while (1){
+        if(read(game.pipes[playerID][0], &card , sizeof(card)) <=0){
+            printf("You've run out of cards. Bye bye\n");
+            exit(0);
+        }
+
+        if (card > 10){
+            game.players[playerID].score += 10;  //Picture cards ie 11,12,13 will act as a 10
+        }
+        else { 
+            game.players[playerID].score += card;
+        }
+        printf("Player %d drew a %d. Current score %d\n", playerID, card, game.players[playerID].score); //prints the drawn card and the new score
+
+        if (card == 3 || card == 7){
+            int victim = chooseVictim(playerID);
+            write(game.pipes[playerID][1], &victim, sizeof(victim));
+        }
+        if(game.players[playerID].score >= 21){ 
+            if(game.players[playerID].score == 21){
+            printf("Player %d is the big dog\n", playerID);
+        }
+        else{
+            printf("Player %d has gone busta rhymes\n", playerID);
+            }
+        
+         exit(0);
+    }  
+    
+       
+        
+    }
+}
+
+int chooseVictim(int playerID){
+    int victim;
+    do{
+        printf("Player %d chose a random player to increase the score of (0-%d):", playerID, game.Playercount -1);
+        scanf("%d", &victim);
+    }while(victim < 0 || victim >= game.Playercount || victim == playerID);
+    return victim;
+}
+
+void cleanup() {
+    free(deck);
+    sem_close(game.semaphore);
+    sem_unlink("game_semaphore");
+    for (int i = 0; i < game.Playercount, i++;){
+        close(game.pipes[i][0]);
+        close(game.pipes[i][1]);
+    }
+}
+
+int main(){
+    srand(time(NULL));
+
+    int Playercount;
+    printf("Enter the number of players (2-%d):", MAX_players);
+    scanf("%d", &Playercount);
+
+    if (Playercount < 2 || Playercount > MAX_players){
+        printf("You can't play with yourself here. Or with that many people, its greedy...\n");
+        return 1;
+    }
+
+    initDeck();
+    initPlayers(Playercount);
+
+    for (int i = 0; i < Playercount; i ++){           // Fork child processes for players
+        pid_t pid = fork();
+        if (pid == 0){
+            playGame(i); //child process logic
+            exit(0); // prevent child from continuing into dealer logic
+        }
+    }
+    for (int i = 0; i < Playercount; i++){ //1 cards dealt to each player at start to prevent child processes hanging
+        int card = deck[i]; 
+        write(game.pipes[i][1], &card, sizeof(card));
+    }
+
+
+    for (int i = 0; i < Playercount; i ++){ //Waits for all child processes to finish
+        wait(NULL);
+    } 
+
+    cleanup();
+    return 0;
+
+}
